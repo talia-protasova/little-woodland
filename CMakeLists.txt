@@ -32,6 +32,7 @@ find_package(OpenGL REQUIRED)
 
 add_executable(little_woodland
     src/main.cpp
+    src/rendering/ShaderProgram.cpp
 )
 
 target_link_libraries(little_woodland

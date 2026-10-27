@@ -1,7 +1,10 @@
 #include <glad/gl.h>
 #include <GLFW/glfw3.h>
 
+#include <exception>
 #include <iostream>
+
+#include "rendering/ShaderProgram.h"
 
 // Vertex shader
 const char* vertexShaderSource = R"(#version 330 core
@@ -21,29 +24,6 @@ void main() {
 }
 )";
 
-// Compile a shader and check for errors
-GLuint compileShader(GLenum type, const char* source) {
-    GLuint shader = glCreateShader(type);
-
-    glShaderSource(shader, 1, &source, nullptr);
-    glCompileShader(shader);
-
-    GLint success = GL_FALSE;
-    glGetShaderiv(shader, GL_COMPILE_STATUS, &success);
-
-    if (success != GL_TRUE) {
-        char infoLog[1024];
-        glGetShaderInfoLog(shader, sizeof(infoLog), nullptr, infoLog);
-
-        std::cerr << "Shader compilation failed:\n"
-                  << infoLog << '\n';
-
-        glDeleteShader(shader);
-        return 0;
-    }
-
-    return shader;
-}
 
 int main() {
     if (!glfwInit()) {
@@ -107,56 +87,11 @@ int main() {
          0.00f,  0.45f
     };
 
-    // Compile shaders
-    GLuint vertexShader = compileShader(
-        GL_VERTEX_SHADER,
-        vertexShaderSource
-    );
-
-    GLuint fragmentShader = compileShader(
-        GL_FRAGMENT_SHADER,
+    try {
+    ShaderProgram shaderProgram(
+        vertexShaderSource,
         fragmentShaderSource
     );
-
-    if (!vertexShader || !fragmentShader) {
-        if (vertexShader) glDeleteShader(vertexShader);
-        if (fragmentShader) glDeleteShader(fragmentShader);
-
-        glfwDestroyWindow(window);
-        glfwTerminate();
-        return -1;
-    }
-
-    // Create shader program
-    GLuint shaderProgram = glCreateProgram();
-
-    glAttachShader(shaderProgram, vertexShader);
-    glAttachShader(shaderProgram, fragmentShader);
-    glLinkProgram(shaderProgram);
-
-    GLint linked = GL_FALSE;
-    glGetProgramiv(shaderProgram, GL_LINK_STATUS, &linked);
-
-    glDeleteShader(vertexShader);
-    glDeleteShader(fragmentShader);
-
-    if (linked != GL_TRUE) {
-        char infoLog[1024];
-        glGetProgramInfoLog(
-            shaderProgram,
-            sizeof(infoLog),
-            nullptr,
-            infoLog
-        );
-
-        std::cerr << "Shader linking failed:\n"
-                  << infoLog << '\n';
-
-        glDeleteProgram(shaderProgram);
-        glfwDestroyWindow(window);
-        glfwTerminate();
-        return -1;
-    }
 
     // Create vertex objects
     GLuint VAO, VBO;
@@ -195,7 +130,7 @@ int main() {
         glClear(GL_COLOR_BUFFER_BIT);
 
         // Draw triangle
-        glUseProgram(shaderProgram);
+        shaderProgram.use();
         glBindVertexArray(VAO);
         glDrawArrays(GL_TRIANGLES, 0, 3);
 
@@ -203,10 +138,18 @@ int main() {
         glfwPollEvents();
     }
 
-    // Cleanup
-    glDeleteVertexArrays(1, &VAO);
-    glDeleteBuffers(1, &VBO);
-    glDeleteProgram(shaderProgram);
+      // Cleanup geometry
+        glDeleteVertexArrays(1, &VAO);
+        glDeleteBuffers(1, &VBO);
+
+    } catch (const std::exception& error) {
+        std::cerr << "Rendering error:\n"
+                  << error.what() << '\n';
+
+        glfwDestroyWindow(window);
+        glfwTerminate();
+        return -1;
+    }
 
     glfwDestroyWindow(window);
     glfwTerminate();
