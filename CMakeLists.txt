@@ -9,6 +9,16 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# The browser uses Emscripten's GLFW/GLES port and an intentionally silent backend.
+# Desktop dependencies and release packaging remain confined to the native build.
+if(EMSCRIPTEN)
+    if(WOODLAND_RELEASE_WITH_AUDIO)
+        message(FATAL_ERROR "Browser audio is not implemented; use the sound-free web build")
+    endif()
+    add_compile_options(-fexceptions)
+    add_library(woodland_audio src/audio/AudioSilent.cpp)
+    target_include_directories(woodland_audio PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+else()
 include(FetchContent)
 
 FetchContent_Declare(
@@ -41,6 +51,8 @@ target_include_directories(woodland_audio SYSTEM PRIVATE ${CMAKE_CURRENT_SOURCE_
 target_compile_definitions(woodland_audio PRIVATE MA_NO_FLAC MA_NO_MP3 MA_NO_ENCODING MA_NO_GENERATION MA_NO_RESOURCE_MANAGER MA_NO_NODE_GRAPH MA_NO_ENGINE)
 target_link_libraries(woodland_audio PRIVATE Threads::Threads ${CMAKE_DL_LIBS} m)
 
+endif()
+
 add_library(woodland_puzzle src/puzzle/Board.cpp src/puzzle/Level.cpp)
 target_include_directories(woodland_puzzle PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
@@ -58,24 +70,23 @@ add_executable(little_woodland
 
 # Resolve the source asset directory once at configure time. Both project-root and
 # build-directory launches work without copying assets after each build.
-if(NOT WOODLAND_PORTABLE)
+if(NOT EMSCRIPTEN AND NOT WOODLAND_PORTABLE)
     target_compile_definitions(little_woodland PRIVATE WOODLAND_ASSET_DIR="${CMAKE_CURRENT_SOURCE_DIR}/assets")
 endif()
 target_include_directories(little_woodland SYSTEM PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/third_party/stb)
 
-target_link_libraries(little_woodland
-    PRIVATE
-        woodland_presentation
-        woodland_audio
-        glfw
-        glad_gl_core_33
-        OpenGL::GL
-)
+target_link_libraries(little_woodland PRIVATE woodland_presentation woodland_audio)
+if(EMSCRIPTEN)
+    include(cmake/WebBuild.cmake)
+else()
+    target_link_libraries(little_woodland PRIVATE glfw glad_gl_core_33 OpenGL::GL)
+endif()
 
 include(CTest)
-if(BUILD_TESTING)
+if(BUILD_TESTING AND NOT EMSCRIPTEN)
     find_package(Python3 COMPONENTS Interpreter QUIET)
     if(Python3_Interpreter_FOUND)
+        add_test(NAME web_distribution_validation COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/WebTests.py)
         add_test(NAME release_audio_provenance_gate COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/ReleaseTests.py)
     endif()
     add_executable(feedback_tests tests/FeedbackTests.cpp)
@@ -110,6 +121,7 @@ if(BUILD_TESTING)
     add_test(NAME resolution_playback COMMAND playback_tests)
 endif()
 
+if(NOT EMSCRIPTEN)
 # Binary-only, relocatable installation. The portable build excludes source paths.
 set_target_properties(little_woodland PROPERTIES INSTALL_RPATH "$ORIGIN/../lib")
 install(TARGETS little_woodland RUNTIME DESTINATION bin)
@@ -156,3 +168,5 @@ set(CPACK_SET_DESTDIR OFF)
 set(CPACK_PACKAGING_INSTALL_PREFIX "/")
 set(CPACK_STRIP_FILES TRUE)
 include(CPack)
+
+endif()

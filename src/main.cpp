@@ -1,5 +1,10 @@
-#include <glad/gl.h>
+#include "rendering/GL.h"
+#define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
+
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+#endif
 
 #include <charconv>
 #include <cstdint>
@@ -8,6 +13,7 @@
 #include <memory>
 #include <optional>
 #include <stdexcept>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -25,7 +31,7 @@ struct Click { std::optional<woodland::Cell> cell; bool restart = false; bool so
 /**
  * Bridges GLFW's C callback to the main loop without throwing across a C boundary.
  * Owns queued clicks and an exception to rethrow later; Level/BoardPlayback pointers
- * are non-owning and stay valid because their stack objects outlive callback use.
+ * are non-owning and stay valid because their application owner outlives callback use.
  */
 struct MouseInput {
     std::vector<Click> clicks;
@@ -65,40 +71,41 @@ std::uint32_t parseSeed(int argc, char** argv) {
 }
 }
 
-/**
- * Creates a seeded level and platform resources, then drives input, presentation,
- * feedback and rendering. Rules remain in Level/Board; callbacks queue intentions
- * and the main loop serializes their effects. Top-level exceptions print a useful
- * error and unwind RAII owners before returning failure.
- */
-int main(int argc, char** argv) {
-    try {
-        const auto seed = parseSeed(argc, argv);
-        // Construct deterministic rules before platform setup; tests use this same
-        // level path without a window, renderer or audio device.
-        woodland::Level level(woodland::LevelDefinition::demo(seed));
-        // Initialize GLFW before requesting the OpenGL 3.3 core-profile window.
-        GlfwLifetime glfw;
+/** Owns the session across browser callbacks. Member order releases GPU/audio
+ * resources before the current window/context and GLFW on every shutdown path. */
+class Application {
+    woodland::Level level;
+    GlfwLifetime glfw;
+    std::unique_ptr<GLFWwindow, decltype(&glfwDestroyWindow)> window{nullptr, glfwDestroyWindow};
+    std::unique_ptr<woodland::Audio> audioOwner;
+    woodland::BoardPlayback playback;
+    MouseInput mouse;
+    std::unique_ptr<woodland::BoardRenderer> rendererOwner;
+    std::unique_ptr<GLFWcursor, decltype(&glfwDestroyCursor)> pointer{nullptr, glfwDestroyCursor};
+    bool restartHeld = false, muteHeld = false;
+    double previousTime = 0;
+public:
+    explicit Application(std::uint32_t seed) : level(woodland::LevelDefinition::demo(seed)) {
         glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+#ifdef __EMSCRIPTEN__
+        glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 0);
+        glfwWindowHint(GLFW_CLIENT_API, GLFW_OPENGL_ES_API);
+#else
         glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
         glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-        std::unique_ptr<GLFWwindow, decltype(&glfwDestroyWindow)> window(
-            glfwCreateWindow(480, 800, "Little Woodland", nullptr, nullptr), glfwDestroyWindow);
-        if (!window) throw std::runtime_error("Failed to create window");
+#endif
+        window.reset(glfwCreateWindow(480, 800, "Little Woodland", nullptr, nullptr));
+        if (!window) throw std::runtime_error("Failed to create graphics window (WebGL 2 required)");
         glfwMakeContextCurrent(window.get());
-        // Driver entry points are valid only after the window's context is current.
+#ifndef __EMSCRIPTEN__
         const int version = gladLoadGL(glfwGetProcAddress);
-        if (version == 0) throw std::runtime_error("Failed to initialize GLAD");
-        std::cout << "OpenGL version: " << GLAD_VERSION_MAJOR(version) << '.'
-                  << GLAD_VERSION_MINOR(version) << "\nBoard seed: " << seed << std::endl;
+        if (!version) throw std::runtime_error("Failed to initialize GLAD");
+#endif
+        std::cout << "Graphics: " << glGetString(GL_VERSION) << "\nBoard seed: " << seed << std::endl;
+#ifndef __EMSCRIPTEN__
         glfwSwapInterval(1);
-
-        // Resolve assets once. Audio owns optional CPU/device resources; the renderer
-        // later creates required GPU resources while this context is still current.
-        const auto assets=woodland::assetRoot();
-        woodland::Audio audio(assets);
-        woodland::BoardPlayback playback;
-        MouseInput mouse;
+#endif
+        audioOwner = std::make_unique<woodland::Audio>(woodland::assetRoot());
         mouse.playback = &playback;
         mouse.level = &level;
         mouse.clicks.reserve(8);
@@ -130,79 +137,119 @@ int main(int argc, char** argv) {
             }
         });
 
-        // Reverse stack destruction releases renderer textures/program/geometry
-        // before the window/context, and stops the audio callback before its data
-        // owners and GLFW disappear. Keep this ordering when adding new resources.
-        woodland::BoardRenderer renderer;
-        std::unique_ptr<GLFWcursor, decltype(&glfwDestroyCursor)> pointer(
-            glfwCreateStandardCursor(GLFW_HAND_CURSOR), glfwDestroyCursor);
-        bool restartHeld = false;
-        bool muteHeld = false;
-        double previousTime = glfwGetTime();
-        while (!glfwWindowShouldClose(window.get())) {
-            // Poll while the previous playback state is still locked, then advance its clock.
-            // A click made during the last animation frame must not leak into the next move.
-            glfwPollEvents();
-            // Elapsed seconds drive every crossed stage and the result-character
-            // clock; neither motion nor sound cue counts depend on render frequency.
-            const double now = glfwGetTime();
-            playback.update(level, now - previousTime);
-            previousTime = now;
-            if (mouse.error) std::rethrow_exception(mouse.error);
-            for (const auto& clicked : mouse.clicks) {
-                if (clicked.sound) { audio.toggleMute(); }
-                else if (clicked.restart) {
-                    // Reset rules, selection, cues and character time together.
-                    // Audio persists as session state, so stop voices without unmuting.
-                    audio.stop();
-                    level.restart();
-                    playback = woodland::BoardPlayback{};
-                } else playback.click(level, clicked.cell);
-            }
-            mouse.clicks.clear();
-            // Edge detection makes R/M session actions discrete even when a key is
-            // held; Escape can remain a level-triggered request to leave the loop.
-            const bool restart = glfwGetKey(window.get(), GLFW_KEY_R) == GLFW_PRESS;
-            if (restart && !restartHeld) {
+        rendererOwner = std::make_unique<woodland::BoardRenderer>();
+#ifndef __EMSCRIPTEN__
+        pointer.reset(glfwCreateStandardCursor(GLFW_HAND_CURSOR));
+#endif
+        previousTime = glfwGetTime();
+    }
+    bool running() const { return !glfwWindowShouldClose(window.get()); }
+    void frame() {
+        auto& audio = *audioOwner;
+        auto& renderer = *rendererOwner;
+        // Poll while the previous playback state is still locked, then advance its clock.
+        // A click made during the last animation frame must not leak into the next move.
+        glfwPollEvents();
+        // Elapsed seconds drive every crossed stage and the result-character
+        // clock; neither motion nor sound cue counts depend on render frequency.
+        const double now = glfwGetTime();
+        playback.update(level, now - previousTime);
+        previousTime = now;
+        if (mouse.error) std::rethrow_exception(mouse.error);
+        for (const auto& clicked : mouse.clicks) {
+            if (clicked.sound) { audio.toggleMute(); }
+            else if (clicked.restart) {
+                // Reset rules, selection, cues and character time together.
+                // Audio persists as session state, so stop voices without unmuting.
                 audio.stop();
                 level.restart();
                 playback = woodland::BoardPlayback{};
-                mouse.clicks.clear();
-            }
-            restartHeld = restart;
-            const bool mute=glfwGetKey(window.get(),GLFW_KEY_M)==GLFW_PRESS;
-            if(mute && !muteHeld)audio.toggleMute();
-            muteHeld=mute;
-            // Consume stage/selection events once after input handling. A restart
-            // replaces playback first, so cues from the old level cannot leak through.
-            for(const auto cue:playback.takeSoundCues())audio.play(cue);
-            if (glfwGetKey(window.get(), GLFW_KEY_ESCAPE) == GLFW_PRESS)
-                glfwSetWindowShouldClose(window.get(), GLFW_TRUE);
-            int width, height;
-            // Drawing uses physical framebuffer pixels; cursor hit testing below
-            // uses logical window pixels with the same aspect-preserving layout.
-            glfwGetFramebufferSize(window.get(), &width, &height);
-            glViewport(0, 0, width, height);
-            double cursorX, cursorY;
-            int windowWidth, windowHeight;
-            glfwGetCursorPos(window.get(), &cursorX, &cursorY);
-            glfwGetWindowSize(window.get(), &windowWidth, &windowHeight);
-            const auto restartBounds = playback.showingResult(level)
-                ? woodland::ResultLayout::fit(windowWidth, windowHeight).restart
-                : woodland::GameLayout::fit(windowWidth, windowHeight).restart;
-            const bool restartHovered = restartBounds.contains(cursorX, cursorY);
-            const bool soundHovered=woodland::soundToggleBounds(windowWidth,windowHeight,playback.showingResult(level)).contains(cursorX,cursorY);
-            glfwSetCursor(window.get(), (restartHovered || (soundHovered && audio.status()!=woodland::SoundStatus::Unavailable)) ? pointer.get() : nullptr);
-            glClearColor(0.956f, 0.930f, 0.871f, 1.0f);
-            glClear(GL_COLOR_BUFFER_BIT);
-            renderer.draw(level.board(), playback, width, height, &level, restartHovered, audio.status(), soundHovered);
-            // Present only after the complete read-only scene has been drawn.
-            glfwSwapBuffers(window.get());
+            } else playback.click(level, clicked.cell);
         }
+        mouse.clicks.clear();
+        // Edge detection makes R/M session actions discrete even when a key is
+        // held; Escape can remain a level-triggered request to leave the loop.
+        const bool restart = glfwGetKey(window.get(), GLFW_KEY_R) == GLFW_PRESS;
+        if (restart && !restartHeld) {
+            audio.stop();
+            level.restart();
+            playback = woodland::BoardPlayback{};
+            mouse.clicks.clear();
+        }
+        restartHeld = restart;
+        const bool mute=glfwGetKey(window.get(),GLFW_KEY_M)==GLFW_PRESS;
+        if(mute && !muteHeld)audio.toggleMute();
+        muteHeld=mute;
+        // Consume stage/selection events once after input handling. A restart
+        // replaces playback first, so cues from the old level cannot leak through.
+        for(const auto cue:playback.takeSoundCues())audio.play(cue);
+        if (glfwGetKey(window.get(), GLFW_KEY_ESCAPE) == GLFW_PRESS)
+            glfwSetWindowShouldClose(window.get(), GLFW_TRUE);
+        int width, height;
+        // Drawing uses physical framebuffer pixels; cursor hit testing below
+        // uses logical window pixels with the same aspect-preserving layout.
+        glfwGetFramebufferSize(window.get(), &width, &height);
+        glViewport(0, 0, width, height);
+        double cursorX, cursorY;
+        int windowWidth, windowHeight;
+        glfwGetCursorPos(window.get(), &cursorX, &cursorY);
+        glfwGetWindowSize(window.get(), &windowWidth, &windowHeight);
+        const auto restartBounds = playback.showingResult(level)
+            ? woodland::ResultLayout::fit(windowWidth, windowHeight).restart
+            : woodland::GameLayout::fit(windowWidth, windowHeight).restart;
+        const bool restartHovered = restartBounds.contains(cursorX, cursorY);
+        const bool soundHovered=woodland::soundToggleBounds(windowWidth,windowHeight,playback.showingResult(level)).contains(cursorX,cursorY);
+#ifndef __EMSCRIPTEN__
+        glfwSetCursor(window.get(), (restartHovered || (soundHovered && audio.status()!=woodland::SoundStatus::Unavailable)) ? pointer.get() : nullptr);
+#endif
+        glClearColor(0.956f, 0.930f, 0.871f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+        renderer.draw(level.board(), playback, width, height, &level, restartHovered, audio.status(), soundHovered);
+        // Present only after the complete read-only scene has been drawn.
+        glfwSwapBuffers(window.get());
+    }
+};
+
+#ifdef __EMSCRIPTEN__
+// main returns to the browser; this owner keeps every callback target alive.
+static std::unique_ptr<Application> application;
+EM_JS(void, webReady, (), { if (Module.gameReady) Module.gameReady(); });
+EM_JS(void, webStopped, (), { if (Module.gameStopped) Module.gameStopped(); });
+EM_JS(void, webError, (const char* message), {
+    if (Module.gameError) Module.gameError(UTF8ToString(message));
+});
+static void browserFrame(void*) {
+    try {
+        application->frame();
+        if (application->running()) return;
+        emscripten_cancel_main_loop();
+        application.reset();
+        webStopped();
     } catch (const std::exception& error) {
-        // This also receives callback errors rethrown by the main loop; callback
-        // exceptions themselves never escape through GLFW's C interface.
+        // Never throw through a browser callback. Clean GPU owners up first.
+        const std::string message = error.what();
+        emscripten_cancel_main_loop();
+        application.reset();
+        webError(message.c_str());
+    }
+}
+#endif
+
+int main(int argc, char** argv) {
+    try {
+#ifdef __EMSCRIPTEN__
+        application = std::make_unique<Application>(parseSeed(argc, argv));
+        webReady();
+        emscripten_set_main_loop_arg(browserFrame, nullptr, 0, false);
+#else
+        Application application(parseSeed(argc, argv));
+        while (application.running()) application.frame();
+#endif
+    } catch (const std::exception& error) {
         std::cerr << "Little Woodland error:\n" << error.what() << '\n';
+#ifdef __EMSCRIPTEN__
+        webError(error.what());
+#endif
         return 1;
     }
     return 0;

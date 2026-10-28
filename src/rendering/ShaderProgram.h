@@ -1,6 +1,6 @@
 #pragma once
 
-#include <glad/gl.h>
+#include "GL.h"
 
 /**
  * Compiles, links and exclusively owns one OpenGL shader program.

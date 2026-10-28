@@ -14,7 +14,12 @@ namespace woodland {
 namespace {
 // Geometry is converted to clip space on the CPU. The shader carries tint, UVs
 // and an optional illustration-edge feather through the same sprite/font pipeline.
-const char* vertexSource = R"(#version 330 core
+#ifdef __EMSCRIPTEN__
+#define WOODLAND_GLSL "#version 300 es\nprecision highp float;\n"
+#else
+#define WOODLAND_GLSL "#version 330 core\n"
+#endif
+const char* vertexSource = WOODLAND_GLSL R"(
 layout(location = 0) in vec2 position;
 layout(location = 1) in vec4 color;
 layout(location = 2) in vec2 texCoord;
@@ -31,7 +36,7 @@ void main() {
 )";
 // Textures already contain premultiplied RGB. Premultiply only the tint opacity
 // here, so page fades preserve the blend convention instead of darkening edges.
-const char* fragmentSource = R"(#version 330 core
+const char* fragmentSource = WOODLAND_GLSL R"(
 in vec4 tileColor;
 in float edgeFeather;
 in vec2 uv;

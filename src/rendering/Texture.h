@@ -1,6 +1,6 @@
 #pragma once
 
-#include <glad/gl.h>
+#include "GL.h"
 #include <filesystem>
 
 namespace woodland {

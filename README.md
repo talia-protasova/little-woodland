@@ -153,6 +153,12 @@ Little Woodland is a playable Linux desktop prototype featuring a complete lette
 
 The project is being prepared as a portfolio demonstration of C++ game development, UI engineering, and AI-assisted development.
 
+## Browser build
+
+A sound-free WebAssembly/WebGL 2 build is available for local preview and future
+GitHub Pages deployment. See [WEB_DEMO.md](WEB_DEMO.md) for the pinned Emscripten
+SDK, build commands, browser limitations and deployment setup.
+
 ---
 
 *Little Woodland is an independent portfolio project, not affiliated with any other commercial game studio.*
