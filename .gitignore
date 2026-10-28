@@ -3,3 +3,6 @@
 
 # Internal project documentation
 /docs/
+
+# Third-party sound effects: local development only
+/assets/audio/mixkit/
