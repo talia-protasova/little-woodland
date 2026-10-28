@@ -4,6 +4,7 @@ namespace woodland {
 /**
  * Resolves the runtime asset root without depending on the current working directory.
  *
+ * On Emscripten, returns the preloaded /assets virtual-filesystem directory.
  * On Linux, /proc/self/exe locates the installed ../share/little-woodland/assets
  * first. Development builds may then use a compiled-in checkout fallback; portable
  * builds omit that fallback. A berry image is the directory sentinel, not a full

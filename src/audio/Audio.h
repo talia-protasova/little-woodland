@@ -4,6 +4,8 @@
 #include <memory>
 namespace woodland {
 /**
+ * The sound-free browser implementation preserves this facade and reports
+ * Unavailable without opening a device. Native implementation:
  * Owns decoded optional WAV clips and a miniaudio playback device through Impl.
  *
  * The application calls this facade on its main thread; the device callback mixes

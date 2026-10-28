@@ -6,3 +6,9 @@
 
 # Third-party sound effects: local development only
 /assets/audio/mixkit/
+
+# Generated browser builds and distributions
+/build-web/
+/dist/
+/tools/__pycache__/
+/tests/__pycache__/

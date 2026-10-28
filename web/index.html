@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#f4eddf">
+<link rel="icon" href="data:,">
+<title>Little Woodland — Woodland Post</title>
+<style>
+:root { color-scheme: light; background:#e4dfcf; color:#384534; font:16px Georgia,serif; }
+* { box-sizing:border-box; }
+body { margin:0; min-height:100svh; display:grid; place-items:center; padding:8px; }
+main { position:relative; width:min(480px, calc(100vw - 16px), calc((100svh - 16px) * .6)); aspect-ratio:3/5; background:#f4eddf; }
+canvas { display:block; width:100%; height:100%; outline:none; touch-action:none; }
+canvas:focus-visible { outline:2px solid #718363; outline-offset:2px; }
+#status { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; padding:24px; text-align:center; background:#f4eddf; }
+#status[hidden] { display:none; }
+button { font:inherit; color:inherit; background:#d4ddc2; border:1px solid #718363; border-radius:4px; padding:10px 20px; cursor:pointer; }
+small { display:block; line-height:1.5; }
+</style>
+</head>
+<body>
+<main aria-label="Little Woodland game">
+<canvas id="canvas" width="480" height="800" tabindex="0" aria-label="Match adjacent tiles to deliver the letter. Click two tiles. R restarts, M toggles sound, Escape stops the game."></canvas>
+<div id="status" role="status"><p id="message">Opening the woodland post…</p><small id="detail">Loading illustrations. This browser demo has no audio.</small><button id="reload" hidden>Open again</button></div>
+</main>
+<script>
+'use strict';
+const canvas = document.getElementById('canvas');
+const statusPanel = document.getElementById('status');
+const message = document.getElementById('message');
+const detail = document.getElementById('detail');
+const reload = document.getElementById('reload');
+function fail(text) {
+  document.body.dataset.game = 'error';
+  statusPanel.hidden = false;
+  message.textContent = 'The woodland post could not open.';
+  detail.textContent = text;
+  reload.hidden = false;
+}
+reload.onclick = () => location.reload();
+canvas.addEventListener('pointerdown', () => canvas.focus());
+canvas.addEventListener('keydown', event => {
+  if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight',' '].includes(event.key)) event.preventDefault();
+});
+// Emscripten GLFW maps touch to mouse and scales CSS coordinates to the fixed
+// portrait framebuffer. CSS resizing never changes the game coordinate system.
+canvas.addEventListener('webglcontextlost', event => {
+  event.preventDefault(); fail('Graphics context lost. Open again to restart the game.');
+});
+var Module = {
+  canvas,
+  noAudioDecoding: true,
+  noImageDecoding: true,
+  locateFile: path => new URL(path, document.baseURI).href,
+  setStatus: text => { if (text) detail.textContent = text; },
+  onAbort: reason => fail('Initialization failed: ' + reason),
+  gameError: fail,
+  gameReady: () => { statusPanel.hidden = true; canvas.focus(); document.body.dataset.game = 'ready'; },
+  gameStopped: () => {
+    statusPanel.hidden = false; message.textContent = 'The woodland post is closed.';
+    detail.textContent = 'Open again to start a fresh delivery.'; reload.hidden = false;
+    document.body.dataset.game = 'stopped';
+  },
+  printErr: text => console.error(text)
+};
+window.addEventListener('error', event => fail(event.message || 'A game resource could not load.'));
+window.addEventListener('unhandledrejection', event => fail(String(event.reason)));
+if (!document.createElement('canvas').getContext('webgl2')) {
+  fail('WebGL 2 is required. Try an up-to-date browser with hardware acceleration enabled.');
+} else {
+  const script = document.createElement('script');
+  script.src = 'little_woodland.js';
+  script.onerror = () => fail('Could not download the game. Check your connection and open again.');
+  document.body.appendChild(script);
+}
+</script>
+<noscript>This game requires JavaScript and WebGL 2.</noscript>
+</body>
+</html>
